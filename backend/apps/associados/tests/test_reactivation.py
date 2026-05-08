@@ -13,6 +13,7 @@ from apps.contratos.competencia import create_cycle_with_parcelas
 from apps.contratos.models import Ciclo, Contrato, Parcela
 from apps.esteira.models import EsteiraItem
 from apps.esteira.services import EsteiraService
+from apps.refinanciamento.models import Comprovante
 
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
@@ -414,6 +415,20 @@ class AssociadoReactivationTestCase(TestCase):
             [date(2026, 4, 1), date(2026, 5, 1), date(2026, 6, 1)],
         )
         self.assertEqual(novo_contrato.comprovantes.count(), 3)
+        self.assertEqual(
+            novo_contrato.comprovantes.filter(
+                papel=Comprovante.Papel.ASSOCIADO,
+                deleted_at__isnull=True,
+            ).count(),
+            2,
+        )
+        self.assertEqual(
+            novo_contrato.comprovantes.filter(
+                papel=Comprovante.Papel.AGENTE,
+                deleted_at__isnull=True,
+            ).count(),
+            1,
+        )
         detail_response = self.coord_client.get(f"/api/v1/associados/{associado.id}/")
         self.assertEqual(detail_response.status_code, 200, detail_response.json())
         detail_contract = next(
@@ -430,6 +445,88 @@ class AssociadoReactivationTestCase(TestCase):
             associado.esteira_item.transicoes.filter(
                 acao="reativar_associado"
             ).exists()
+        )
+
+    def test_efetivacao_reativacao_preserva_competencia_com_evidencia_historica(self):
+        associado = self._create_inactive_associado(
+            cpf="70000000009",
+            competencia_inicial=date(2026, 1, 1),
+        )
+        contrato_anterior = associado.contratos.get()
+        ciclo_futuro = Ciclo.objects.create(
+            contrato=contrato_anterior,
+            numero=2,
+            data_inicio=date(2026, 4, 1),
+            data_fim=date(2026, 6, 1),
+            status=Ciclo.Status.APTO_A_RENOVAR,
+            valor_total=Decimal("1500.00"),
+        )
+        parcela_abril_historica = Parcela.objects.create(
+            ciclo=ciclo_futuro,
+            associado=associado,
+            numero=1,
+            referencia_mes=date(2026, 4, 1),
+            valor=Decimal("500.00"),
+            data_vencimento=date(2026, 4, 5),
+            status=Parcela.Status.EM_PREVISAO,
+            data_pagamento=date(2026, 4, 10),
+        )
+
+        response = self.coord_client.post(
+            f"/api/v1/associados/{associado.id}/reativar/",
+            self._reativacao_payload(agente_id=self.agente_a.id),
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.json())
+        associado.refresh_from_db()
+        novo_contrato = associado.contratos.order_by("-id").first()
+
+        EsteiraService.assumir(associado.esteira_item, self.analista)
+        EsteiraService.aprovar(associado.esteira_item, self.analista)
+        for papel in ["associado", "agente"]:
+            upload_response = self.tes_client.post(
+                f"/api/v1/tesouraria/contratos/{novo_contrato.id}/substituir-comprovante/",
+                {
+                    "papel": papel,
+                    "arquivo": SimpleUploadedFile(
+                        f"{papel}.pdf",
+                        b"arquivo",
+                        content_type="application/pdf",
+                    ),
+                },
+                format="multipart",
+            )
+            self.assertEqual(upload_response.status_code, 200, upload_response.json())
+
+        efetivar = self.tes_client.post(
+            f"/api/v1/tesouraria/contratos/{novo_contrato.id}/efetivar/",
+            {},
+            format="json",
+        )
+
+        self.assertEqual(efetivar.status_code, 200, efetivar.json())
+        parcela_abril_historica.refresh_from_db()
+        self.assertIsNone(parcela_abril_historica.deleted_at)
+        self.assertEqual(parcela_abril_historica.status, Parcela.Status.EM_PREVISAO)
+        ciclo_novo = novo_contrato.ciclos.get()
+        self.assertEqual(
+            list(ciclo_novo.parcelas.order_by("referencia_mes").values_list("referencia_mes", flat=True)),
+            [date(2026, 4, 1), date(2026, 5, 1), date(2026, 6, 1)],
+        )
+        parcelas_abril_ativas = Parcela.all_objects.filter(
+            associado=associado,
+            referencia_mes=date(2026, 4, 1),
+            deleted_at__isnull=True,
+        ).exclude(status=Parcela.Status.CANCELADO)
+        self.assertEqual(parcelas_abril_ativas.count(), 2)
+        self.assertTrue(
+            parcelas_abril_ativas.filter(ciclo__contrato=contrato_anterior).exists()
+        )
+        self.assertTrue(
+            parcelas_abril_ativas.filter(ciclo__contrato=novo_contrato).exists()
+        )
+        self.assertTrue(
+            all(item.competencia_lock is None for item in parcelas_abril_ativas)
         )
 
     def test_reativacao_bloqueia_novo_fluxo_se_ja_existe_contrato_operacional(self):

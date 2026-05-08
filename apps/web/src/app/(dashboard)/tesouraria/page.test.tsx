@@ -243,7 +243,7 @@ it("usa date picker no filtro avancado e consulta sem competencia externa", asyn
   );
 });
 
-it("permite visualizar comprovante existente e manter acao de substituir em contratos efetivados", async () => {
+it("permite visualizar comprovante existente e adicionar nova versao em contratos efetivados", async () => {
   const user = userEvent.setup();
 
   mockedApiFetch.mockImplementation(async (path, options) => {
@@ -274,7 +274,7 @@ it("permite visualizar comprovante existente e manter acao de substituir em cont
   renderPage();
 
   const viewAssociadoButton = await screen.findByRole("button", { name: /ver associado/i });
-  expect(screen.getAllByRole("button", { name: /substituir/i }).length).toBeGreaterThan(0);
+  expect(screen.getAllByRole("button", { name: /adicionar versão/i }).length).toBeGreaterThan(0);
 
   await user.click(viewAssociadoButton);
 

@@ -109,6 +109,25 @@ const estadoCivilOptions = [
   { value: "uniao_estavel", label: "União estável" },
 ];
 
+const associadoStatusOptions = [
+  { value: "cadastrado", label: "Cadastrado" },
+  { value: "importado", label: "Importado" },
+  { value: "em_analise", label: "Em análise" },
+  { value: "ativo", label: "Ativo" },
+  { value: "apto_a_renovar", label: "Apto a renovar" },
+  { value: "pendente", label: "Pendente" },
+  { value: "inativo", label: "Inativo" },
+  { value: "inadimplente", label: "Inadimplente" },
+] as const;
+
+const contratoStatusOptions = [
+  { value: "rascunho", label: "Rascunho" },
+  { value: "em_analise", label: "Em análise" },
+  { value: "ativo", label: "Ativo" },
+  { value: "encerrado", label: "Encerrado" },
+  { value: "cancelado", label: "Cancelado" },
+] as const;
+
 const documentFields = [
   { key: "documento_frente", label: "Documento (frente)" },
   { key: "documento_verso", label: "Documento (verso)" },
@@ -151,6 +170,8 @@ const schema = z
       ),
     profissao: z.string().optional(),
     estado_civil: z.string().optional(),
+    status: z.string().optional(),
+    status_contrato: z.string().optional(),
     endereco: z.object({
       cep: z
         .string()
@@ -320,6 +341,8 @@ function defaultValues(
     data_nascimento: parseIsoDate(initialData?.data_nascimento),
     profissao: initialData?.profissao ?? "",
     estado_civil: initialData?.estado_civil ?? "",
+    status: initialData?.status ?? "cadastrado",
+    status_contrato: contrato?.status ?? "rascunho",
     endereco: {
       cep: initialData?.endereco?.cep ?? "",
       endereco: initialData?.endereco?.endereco ?? "",
@@ -699,6 +722,9 @@ export default function AssociadoForm({
                       data_nascimento: toIsoDate(values.data_nascimento),
                       profissao: values.profissao,
                       estado_civil: values.estado_civil,
+                      status: values.status,
+                      status_contrato: values.status_contrato,
+                      contrato_updated_at: null,
                       endereco: values.endereco,
                       dados_bancarios: values.dados_bancarios,
                       contato: values.contato,
@@ -1082,6 +1108,68 @@ export default function AssociadoForm({
                   />
                 </FieldContent>
               </Field>
+              {isAdminEditMode ? (
+                <>
+                  <Field>
+                    <FieldLabel>Status do associado</FieldLabel>
+                    <FieldContent>
+                      <Controller
+                        control={control}
+                        name="status"
+                        render={({ field }) => (
+                          <Select
+                            value={field.value || "cadastrado"}
+                            onValueChange={field.onChange}
+                          >
+                            <SelectTrigger className="w-full rounded-xl bg-card/60">
+                              <SelectValue placeholder="Selecione o status" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {associadoStatusOptions.map((option) => (
+                                <SelectItem
+                                  key={option.value}
+                                  value={option.value}
+                                >
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      />
+                    </FieldContent>
+                  </Field>
+                  <Field>
+                    <FieldLabel>Status do contrato</FieldLabel>
+                    <FieldContent>
+                      <Controller
+                        control={control}
+                        name="status_contrato"
+                        render={({ field }) => (
+                          <Select
+                            value={field.value || "rascunho"}
+                            onValueChange={field.onChange}
+                          >
+                            <SelectTrigger className="w-full rounded-xl bg-card/60">
+                              <SelectValue placeholder="Selecione o status" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {contratoStatusOptions.map((option) => (
+                                <SelectItem
+                                  key={option.value}
+                                  value={option.value}
+                                >
+                                  {option.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      />
+                    </FieldContent>
+                  </Field>
+                </>
+              ) : null}
             </FieldGroup>
           ) : null}
 

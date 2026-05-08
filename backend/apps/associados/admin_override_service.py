@@ -3723,6 +3723,27 @@ class AdminOverrideService:
             else:
                 raise ValidationError("Informe ao menos um ciclo no layout.")
 
+        cycle_refs_from_payload: set[str] = set()
+        for raw_cycle in cycles_payload:
+            if raw_cycle.get("id") is not None:
+                cycle_refs_from_payload.add(str(raw_cycle["id"]))
+            if raw_cycle.get("client_key"):
+                cycle_refs_from_payload.add(str(raw_cycle["client_key"]))
+        single_cycle_ref = (
+            next(iter(cycle_refs_from_payload))
+            if len(cycle_refs_from_payload) == 1
+            else None
+        )
+        for raw_parcela in parcel_items:
+            cycle_ref = raw_parcela.get("cycle_ref") or raw_parcela.get("cycle_id")
+            if cycle_ref not in (None, ""):
+                continue
+            parcela = current_parcelas.get(raw_parcela.get("id"))
+            if parcela is not None and str(parcela.ciclo_id) in cycle_refs_from_payload:
+                raw_parcela["cycle_ref"] = str(parcela.ciclo_id)
+            elif single_cycle_ref is not None:
+                raw_parcela["cycle_ref"] = single_cycle_ref
+
         references_seen: dict[date, list[dict[str, Any]]] = defaultdict(list)
         for raw_parcela in parcel_items:
             if str(raw_parcela.get("status") or "") == Parcela.Status.CANCELADO:

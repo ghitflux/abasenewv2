@@ -575,14 +575,8 @@ class TesourariaService:
         references_to_sync = set(competencias)
         for parcela in conflicts:
             if parcela_has_financial_evidence(parcela):
-                raise ValidationError(
-                    {
-                        "competencias_ciclo": [
-                            "A competência "
-                            f"{parcela.referencia_mes.strftime('%m/%Y')} já possui evidência financeira."
-                        ]
-                    }
-                )
+                references_to_sync.add(parcela.referencia_mes)
+                continue
             parcela.status = Parcela.Status.CANCELADO
             parcela.observacao = (
                 (parcela.observacao or "").strip()

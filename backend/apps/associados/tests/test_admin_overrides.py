@@ -14,6 +14,7 @@ from apps.associados.models import AdminOverrideEvent, Associado, Documento
 from apps.contratos.cycle_projection import (
     ACTIVE_OPERATIONAL_REFINANCIAMENTO_STATUSES,
     build_contract_cycle_projection,
+    get_associado_visual_status_payload,
     invalidate_operational_apt_queue_cache,
     resolve_associado_mother_status,
     sync_associado_mother_status,
@@ -1580,6 +1581,50 @@ class AdminOverrideApiTestCase(TestCase):
             ).exists()
         )
 
+    def test_save_all_resolve_parcela_sem_cycle_ref_pelo_ciclo_atual(self):
+        response = self.admin_client.post(
+            f"/api/v1/admin-overrides/associados/{self.associado.id}/save-all/",
+            {
+                "motivo": "Salvar ciclo com parcela existente sem referencia",
+                "contratos": [
+                    {
+                        "id": self.contrato.id,
+                        "cycles": {
+                            "updated_at": self.contrato.updated_at.isoformat(),
+                            "cycles": [
+                                {
+                                    "id": self.ciclo.id,
+                                    "numero": 1,
+                                    "data_inicio": "2026-01-01",
+                                    "data_fim": "2026-03-01",
+                                    "status": "aberto",
+                                    "valor_total": "900.00",
+                                }
+                            ],
+                            "parcelas": [
+                                {
+                                    "id": self.parcela_jan.id,
+                                    "cycle_ref": "",
+                                    "numero": 1,
+                                    "referencia_mes": "2026-01-01",
+                                    "valor": "300.00",
+                                    "data_vencimento": "2026-01-05",
+                                    "status": "descontado",
+                                    "layout_bucket": "cycle",
+                                }
+                            ],
+                        },
+                    }
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.parcela_jan.refresh_from_db()
+        self.assertEqual(self.parcela_jan.ciclo_id, self.ciclo.id)
+        self.assertEqual(self.parcela_jan.layout_bucket, Parcela.LayoutBucket.CYCLE)
+
     def test_save_all_returns_validation_message_for_invalid_cycle_reference(self):
         response = self.admin_client.post(
             f"/api/v1/admin-overrides/associados/{self.associado.id}/save-all/",
@@ -2060,6 +2105,54 @@ class AdminOverrideApiTestCase(TestCase):
                 associado=self.associado,
                 escopo=AdminOverrideEvent.Scope.ASSOCIADO,
             ).exists()
+        )
+
+    def test_admin_can_set_associado_and_contract_status_to_active(self):
+        associado = Associado.objects.create(
+            nome_completo="Associado Em Analise",
+            cpf_cnpj="11122233344",
+            email="em-analise@teste.local",
+            telefone="86999999998",
+            orgao_publico="SEFAZ",
+            agente_responsavel=self.agent,
+            status=Associado.Status.EM_ANALISE,
+        )
+        contrato = Contrato.objects.create(
+            associado=associado,
+            agente=self.agent,
+            status=Contrato.Status.EM_ANALISE,
+            valor_bruto=Decimal("1500.00"),
+            valor_liquido=Decimal("1200.00"),
+            valor_mensalidade=Decimal("300.00"),
+            prazo_meses=3,
+            taxa_antecipacao=Decimal("30.00"),
+            margem_disponivel=Decimal("900.00"),
+            valor_total_antecipacao=Decimal("900.00"),
+            doacao_associado=Decimal("0.00"),
+            comissao_agente=Decimal("30.00"),
+            data_contrato=date(2026, 1, 1),
+        )
+
+        response = self.admin_client.post(
+            f"/api/v1/admin-overrides/associados/{associado.id}/core/",
+            {
+                "updated_at": associado.updated_at.isoformat(),
+                "contrato_updated_at": contrato.updated_at.isoformat(),
+                "motivo": "Ativar associado via editor avancado",
+                "status": Associado.Status.ATIVO,
+                "status_contrato": Contrato.Status.ATIVO,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.json())
+        associado.refresh_from_db()
+        contrato.refresh_from_db()
+        self.assertEqual(associado.status, Associado.Status.ATIVO)
+        self.assertEqual(contrato.status, Contrato.Status.ATIVO)
+        self.assertEqual(
+            get_associado_visual_status_payload(associado)["status_visual_label"],
+            "Ativo",
         )
 
     def test_admin_can_override_esteira_and_register_transition(self):

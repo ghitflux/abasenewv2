@@ -547,6 +547,11 @@ def _fallback_visual_status_from_models(
         return _compose_visual_status(phase_slug="apto_a_renovar")
     if contrato_status == Contrato.Status.ENCERRADO:
         return _compose_visual_status(phase_slug="contrato_encerrado")
+    if (
+        normalized_status == Associado.Status.ATIVO
+        and contrato_status == Contrato.Status.ATIVO
+    ):
+        return _compose_visual_status(phase_slug="ciclo_aberto")
     return _compose_visual_status(phase_slug="em_analise")
 
 

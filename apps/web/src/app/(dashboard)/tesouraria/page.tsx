@@ -2256,7 +2256,7 @@ function ComprovanteSlot({
               disabled={!canReplace}
             >
               <UploadIcon className="size-4" />
-              {displayName ? "Substituir" : "Enviar"}
+              {displayName ? "Adicionar versão" : "Enviar"}
             </Button>
             {draftFile ? (
               <Button
@@ -2323,7 +2323,7 @@ function ComprovanteSlot({
               disabled={!canReplace}
             >
               <UploadIcon className="size-4" />
-              {draftFile ? "Trocar" : displayUrl ? "Substituir" : "Enviar"}
+              {draftFile ? "Trocar" : displayUrl ? "Adicionar versão" : "Enviar"}
             </Button>
           </div>
           <p className="text-[11px] text-muted-foreground">
