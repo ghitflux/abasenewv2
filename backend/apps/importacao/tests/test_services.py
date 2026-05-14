@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -515,7 +515,7 @@ class ArquivoRetornoServiceTestCase(ImportacaoBaseTestCase):
         self.assertEqual(contrato.ciclos.get(numero=1).parcelas.count(), 3)
 
     @override_settings(CELERY_TASK_ALWAYS_EAGER=False)
-    def test_confirmar_faz_fallback_inline_quando_nao_ha_worker_celery(self):
+    def test_confirmar_enfileira_sem_processar_inline(self):
         self.create_associado_com_contrato(
             cpf="23993596315",
             nome="Maria de Jesus Santana Costa",
@@ -539,17 +539,43 @@ class ArquivoRetornoServiceTestCase(ImportacaoBaseTestCase):
             self.coordenador,
         )
 
-        with patch.object(
-            ArquivoRetornoService,
-            "_has_active_celery_worker",
-            return_value=False,
-        ), patch("apps.importacao.tasks.processar_arquivo_retorno.delay") as delay_mock:
+        with patch("apps.importacao.tasks.processar_arquivo_retorno.delay") as delay_mock:
             arquivo = service.confirmar(arquivo.id)
 
-        delay_mock.assert_not_called()
-        self.assertEqual(arquivo.status, ArquivoRetorno.Status.CONCLUIDO)
-        self.assertEqual(arquivo.resultado_resumo["baixa_efetuada"], 2)
-        self.assertIn("financeiro", arquivo.resultado_resumo)
+        delay_mock.assert_called_once_with(arquivo.id)
+        self.assertEqual(arquivo.status, ArquivoRetorno.Status.PENDENTE)
+        self.assertEqual(arquivo.itens.count(), 0)
+        self.assertNotIn("financeiro", arquivo.resultado_resumo)
+
+    @override_settings(CELERY_TASK_ALWAYS_EAGER=False)
+    def test_reprocessar_recupera_processando_antigo(self):
+        service = ArquivoRetornoService()
+        arquivo = self.create_arquivo_retorno(nome="retorno_preso.txt")
+        arquivo.status = ArquivoRetorno.Status.PROCESSANDO
+        arquivo.save(update_fields=["status", "updated_at"])
+        ArquivoRetorno.objects.filter(pk=arquivo.pk).update(
+            updated_at=timezone.now() - timedelta(minutes=15)
+        )
+
+        with patch("apps.importacao.tasks.processar_arquivo_retorno.delay") as delay_mock:
+            arquivo = service.reprocessar(arquivo.id)
+
+        delay_mock.assert_called_once_with(arquivo.id)
+        self.assertEqual(arquivo.status, ArquivoRetorno.Status.PENDENTE)
+
+    def test_ultima_concluida_nao_serializa_dry_run_legado_incompleto(self):
+        arquivo = self.create_arquivo_retorno(nome="retorno_legado.txt")
+        arquivo.status = ArquivoRetorno.Status.CONCLUIDO
+        arquivo.dry_run_resultado = {
+            "kpis": {"total_no_arquivo": 1},
+            "items": [],
+        }
+        arquivo.save(update_fields=["status", "dry_run_resultado", "updated_at"])
+
+        response = self.coord_client.get("/api/v1/importacao/arquivo-retorno/ultima/")
+
+        self.assertEqual(response.status_code, 200, response.json())
+        self.assertIsNone(response.json()["dry_run_resultado"])
 
     def test_processar_registra_warning_de_parse_e_continua(self):
         self.create_associado_com_contrato(

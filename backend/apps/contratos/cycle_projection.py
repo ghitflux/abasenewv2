@@ -474,8 +474,13 @@ def resolve_associado_status_renovacao(
     return ""
 
 
-def sync_associado_mother_status(associado: Associado) -> bool:
-    invalidate_operational_apt_queue_cache()
+def sync_associado_mother_status(
+    associado: Associado,
+    *,
+    invalidate_queue_cache: bool = True,
+) -> bool:
+    if invalidate_queue_cache:
+        invalidate_operational_apt_queue_cache()
     target_status = resolve_associado_mother_status(associado)
     if str(associado.status or "") == target_status:
         return False

@@ -8,7 +8,10 @@ from django.utils import timezone
 
 from apps.associados.models import Associado, only_digits
 from apps.contratos.competencia import propagate_competencia_status, resolve_processing_competencia_parcela
-from apps.contratos.cycle_projection import sync_associado_mother_status
+from apps.contratos.cycle_projection import (
+    invalidate_operational_apt_queue_cache,
+    sync_associado_mother_status,
+)
 from apps.contratos.models import Parcela
 
 from .matching import find_associado
@@ -28,6 +31,7 @@ class MotorReconciliacao:
     def __init__(self, arquivo_retorno: ArquivoRetorno):
         self.arquivo_retorno = arquivo_retorno
         self.today = timezone.localdate()
+        self._associados_para_sync: dict[int, "Associado"] = {}
 
     def reconciliar(self) -> dict[str, int]:
         resumo = {
@@ -71,6 +75,16 @@ class MotorReconciliacao:
                 resumo["encerramentos"] += 1
             if outcome["gerou_novo_ciclo"]:
                 resumo["novos_ciclos"] += 1
+
+        # Sync de status dos associados em lote, após todos os itens processados.
+        # Evita chamar build_contract_cycle_projection N vezes dentro de transações individuais.
+        if self._associados_para_sync:
+            invalidate_operational_apt_queue_cache()
+            for associado in self._associados_para_sync.values():
+                sync_associado_mother_status(
+                    associado,
+                    invalidate_queue_cache=False,
+                )
 
         return resumo
 
@@ -287,7 +301,7 @@ class MotorReconciliacao:
 
         associado.observacao = self._append_note(associado.observacao, item.status_descricao)
         associado.save(update_fields=["observacao", "updated_at"])
-        sync_associado_mother_status(associado)
+        self._associados_para_sync[associado.id] = associado
 
         item.motivo_rejeicao = item.status_descricao
         item.resultado_processamento = ArquivoRetornoItem.ResultadoProcessamento.NAO_DESCONTADO
@@ -338,8 +352,13 @@ class MotorReconciliacao:
                 associado.observacao,
                 item.status_descricao,
             )
-            associado.save(update_fields=["observacao", "updated_at"])
-            sync_associado_mother_status(associado)
+            update_fields = ["observacao", "updated_at"]
+            if associado.status == Associado.Status.IMPORTADO:
+                associado.status = Associado.Status.INADIMPLENTE
+                update_fields.append("status")
+            else:
+                self._associados_para_sync[associado.id] = associado
+            associado.save(update_fields=update_fields)
             item.motivo_rejeicao = item.status_descricao
             item.resultado_processamento = ArquivoRetornoItem.ResultadoProcessamento.NAO_DESCONTADO
             item.observacao = f"{item.status_descricao}. {nota_sem_parcela}"
@@ -412,7 +431,7 @@ class MotorReconciliacao:
             return
         associado.observacao = self._append_note(associado.observacao, note)
         associado.save(update_fields=["observacao", "updated_at"])
-        sync_associado_mother_status(associado)
+        self._associados_para_sync[associado.id] = associado
 
     @staticmethod
     def _append_note(base: str, note: str) -> str:

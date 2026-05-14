@@ -327,7 +327,7 @@ class DryRunKpisSerializer(serializers.Serializer):
     valor_previsto = serializers.DecimalField(max_digits=14, decimal_places=2)
     valor_real = serializers.DecimalField(max_digits=14, decimal_places=2)
     aptos_a_renovar = serializers.IntegerField()
-    associados_inativos_com_desconto = serializers.IntegerField()
+    associados_inativos_com_desconto = serializers.IntegerField(default=0)
     valores_30_50 = DryRunValores3050Serializer()
     mudancas_status_associado = DryRunMudancaStatusSerializer(many=True)
     mudancas_status_ciclo = DryRunMudancaStatusSerializer(many=True)
@@ -366,6 +366,8 @@ class ArquivoRetornoDetailSerializer(ArquivoRetornoListSerializer):
 
     @extend_schema_field(DryRunResultadoSerializer(allow_null=True))
     def get_dry_run_resultado(self, obj: ArquivoRetorno):
+        if obj.status != ArquivoRetorno.Status.AGUARDANDO_CONFIRMACAO:
+            return None
         if not obj.dry_run_resultado:
             return None
         return DryRunResultadoSerializer(obj.dry_run_resultado).data

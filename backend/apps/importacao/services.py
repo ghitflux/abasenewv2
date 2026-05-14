@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone as dt_timezone
 from decimal import Decimal
 from pathlib import Path
@@ -39,6 +39,9 @@ from .return_auto_enrollment import build_payment_identity
 from .validators import ArquivoRetornoValidator
 
 logger = logging.getLogger(__name__)
+PROCESSING_STALE_AFTER = timedelta(
+    minutes=getattr(settings, "IMPORTACAO_RETORNO_PROCESSING_STALE_MINUTES", 10)
+)
 
 
 def competencia_to_date(value: str):
@@ -316,7 +319,10 @@ class ArquivoRetornoService:
 
     def reprocessar(self, arquivo_retorno_id: int) -> ArquivoRetorno:
         arquivo_retorno = ArquivoRetorno.objects.get(pk=arquivo_retorno_id)
-        if arquivo_retorno.status == ArquivoRetorno.Status.PROCESSANDO:
+        if (
+            arquivo_retorno.status == ArquivoRetorno.Status.PROCESSANDO
+            and not self._is_processing_stale(arquivo_retorno)
+        ):
             raise ValidationError("O arquivo já está em processamento.")
         arquivo_retorno.status = ArquivoRetorno.Status.PENDENTE
         arquivo_retorno.processado_em = None
@@ -334,7 +340,18 @@ class ArquivoRetornoService:
         with transaction.atomic():
             arquivo_retorno = ArquivoRetorno.objects.select_for_update().get(pk=arquivo_retorno_id)
             if arquivo_retorno.status == ArquivoRetorno.Status.PROCESSANDO:
-                raise ValidationError("O arquivo já está em processamento.")
+                if not self._is_processing_stale(arquivo_retorno):
+                    logger.info(
+                        "Arquivo retorno %s já está em processamento; task duplicada ignorada.",
+                        arquivo_retorno_id,
+                    )
+                    return arquivo_retorno
+                logger.warning(
+                    "Arquivo retorno %s estava preso em processamento desde %s; "
+                    "reiniciando processamento.",
+                    arquivo_retorno_id,
+                    arquivo_retorno.updated_at,
+                )
             arquivo_retorno.status = ArquivoRetorno.Status.PROCESSANDO
             arquivo_retorno.processado_em = None
             arquivo_retorno.save(update_fields=["status", "processado_em", "updated_at"])
@@ -479,6 +496,26 @@ class ArquivoRetornoService:
 
         source_path = arquivo_retorno.arquivo_url
         legacy_snapshots = list_legacy_pagamento_snapshots(competencia=ref_date)
+        item_objs_by_linha = {
+            item.linha_numero: item
+            for item in arquivo_retorno.itens.select_related("associado").all()
+        }
+        cpfs_no_arquivo = {
+            re.sub(r"\D", "", str(item.get("cpf_cnpj", "")))
+            for item in items
+            if item.get("cpf_cnpj")
+        }
+        pagamentos_por_cpf: dict[str, list[PagamentoMensalidade]] = defaultdict(list)
+        pagamentos_existentes = (
+            PagamentoMensalidade.objects.filter(referencia_month=ref_date)
+            .select_related("associado")
+            .order_by("id")
+        )
+        for pagamento_existente in pagamentos_existentes:
+            cpf_existente = re.sub(r"\D", "", pagamento_existente.cpf_cnpj or "")
+            if cpf_existente in cpfs_no_arquivo:
+                pagamentos_por_cpf[cpf_existente].append(pagamento_existente)
+
         for i, item in enumerate(items):
             cpf = re.sub(r"\D", "", item.get("cpf_cnpj", ""))
             if not cpf:
@@ -540,12 +577,7 @@ class ArquivoRetornoService:
                 elif associated_imported:
                     associados_importados += 1
                     vinculados += 1
-                candidates = list(
-                    PagamentoMensalidade.objects.filter(
-                        cpf_cnpj=cpf,
-                        referencia_month=ref_date,
-                    ).order_by("id")
-                )
+                candidates = pagamentos_por_cpf.get(cpf, [])
                 target_identity = build_payment_identity(
                     cpf_cnpj=cpf,
                     referencia_month=ref_date,
@@ -564,7 +596,7 @@ class ArquivoRetornoService:
                     ),
                     None,
                 )
-                item_obj = arquivo_retorno.itens.filter(linha_numero=linha).first()
+                item_obj = item_objs_by_linha.get(linha)
                 if item_obj is not None and assoc and item_obj.associado_id != assoc.id:
                     item_obj.associado = assoc
                     item_obj.save(update_fields=["associado", "updated_at"])
@@ -626,6 +658,7 @@ class ArquivoRetornoService:
                         legacy_snapshots.get(cpf),
                     )
                 pagamento.save()
+                pagamentos_por_cpf[cpf].append(pagamento)
                 criados += 1
                 if assoc:
                     vinculados += 1
@@ -753,24 +786,42 @@ class ArquivoRetornoService:
             self.processar(arquivo_retorno_id)
             return
 
-        if not self._has_active_celery_worker():
-            logger.warning(
-                "Nenhum worker Celery ativo respondeu ao ping. "
-                "Processando arquivo retorno %s inline.",
-                arquivo_retorno_id,
-            )
-            self.processar(arquivo_retorno_id)
-            return
-
         try:
             processar_arquivo_retorno.delay(arquivo_retorno_id)
-        except Exception:
+        except Exception as exc:
             logger.exception(
-                "Falha ao enfileirar processamento Celery do arquivo retorno %s. "
-                "Executando inline.",
+                "Falha ao enfileirar processamento Celery do arquivo retorno %s.",
                 arquivo_retorno_id,
             )
-            self.processar(arquivo_retorno_id)
+            self._mark_dispatch_error(arquivo_retorno_id, exc)
+            raise ValidationError(
+                "Não foi possível enfileirar o processamento do arquivo retorno. "
+                "Verifique o Redis/Celery e tente reprocessar."
+            ) from exc
+
+    @staticmethod
+    def _is_processing_stale(arquivo_retorno: ArquivoRetorno) -> bool:
+        reference = arquivo_retorno.updated_at or arquivo_retorno.created_at
+        if reference is None:
+            return True
+        return reference <= timezone.now() - PROCESSING_STALE_AFTER
+
+    @staticmethod
+    def _mark_dispatch_error(arquivo_retorno_id: int, exc: Exception) -> None:
+        try:
+            arquivo_retorno = ArquivoRetorno.objects.get(pk=arquivo_retorno_id)
+        except ArquivoRetorno.DoesNotExist:
+            return
+        arquivo_retorno.status = ArquivoRetorno.Status.ERRO
+        arquivo_retorno.processado_em = timezone.now()
+        arquivo_retorno.resultado_resumo = {
+            **(arquivo_retorno.resultado_resumo or {}),
+            "erro": int((arquivo_retorno.resultado_resumo or {}).get("erro") or 0) + 1,
+            "mensagem": f"Falha ao enfileirar processamento Celery: {exc}",
+        }
+        arquivo_retorno.save(
+            update_fields=["status", "processado_em", "resultado_resumo", "updated_at"]
+        )
 
     def _has_active_celery_worker(self, timeout: float = 1.0) -> bool:
         try:

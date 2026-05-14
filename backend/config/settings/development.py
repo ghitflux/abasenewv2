@@ -18,8 +18,15 @@ if (
 SIMPLE_JWT["ROTATE_REFRESH_TOKENS"] = JWT_ENABLE_TOKEN_BLACKLIST
 SIMPLE_JWT["BLACKLIST_AFTER_ROTATION"] = JWT_ENABLE_TOKEN_BLACKLIST
 
-# Executa tasks Celery de forma sincronas (sem necessidade de worker em dev)
-CELERY_TASK_ALWAYS_EAGER = True
-CELERY_TASK_EAGER_PROPAGATES = True
+# Em desenvolvimento com docker-compose, o worker Celery fica ativo.
+# Mantenha o processamento assíncrono para evitar que uploads/retornos pesados
+# travem a requisição HTTP; use CELERY_TASK_ALWAYS_EAGER=True apenas em debug
+# pontual sem worker.
+CELERY_TASK_ALWAYS_EAGER = config("CELERY_TASK_ALWAYS_EAGER", default=False, cast=bool)
+CELERY_TASK_EAGER_PROPAGATES = config(
+    "CELERY_TASK_EAGER_PROPAGATES",
+    default=CELERY_TASK_ALWAYS_EAGER,
+    cast=bool,
+)
 
 enforce_mysql_only(DATABASES, "config.settings.development")
