@@ -12,16 +12,15 @@ WORKDIR /app
 # Instalar pnpm
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
-# Copiar manifests do workspace
-COPY pnpm-workspace.yaml package.json ./
+# Copiar manifests e lockfile do workspace
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
 COPY apps/web/package.json ./apps/web/
 COPY packages/shared-types/package.json ./packages/shared-types/
 COPY packages/tsconfig/package.json ./packages/tsconfig/
 COPY packages/eslint-config/package.json ./packages/eslint-config/
 
-# Instalar apenas dependências de produção
-RUN pnpm install --frozen-lockfile --filter @abase/web... 2>/dev/null || \
-    pnpm install --filter @abase/web...
+# Instalar dependências com lockfile (garante versões exatas)
+RUN pnpm install --frozen-lockfile --filter @abase/web...
 
 # ── Estágio 2: Build ─────────────────────────────────────────
 FROM node:20-alpine AS builder
