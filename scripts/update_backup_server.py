@@ -44,6 +44,7 @@ COMPOSE  = (
 )
 
 BCKP_BRANCH = 'abase-prod-bckp'
+NGINX_CONF  = f'{REPO}/deploy/hostinger/nginx/nginx.conf'
 
 
 def ssh_run(client, cmd, timeout=120, label=None):
@@ -110,6 +111,14 @@ def adapt_env_for_backup(env_text: str) -> str:
     return '\n'.join(new_lines)
 
 
+def adapt_nginx_for_backup(nginx_text: str) -> str:
+    """
+    Substitui todas as ocorrências de PROD_DOMAIN por BCKP_DOMAIN no nginx.conf.
+    Isso corrige server_name e os paths de SSL certificate.
+    """
+    return nginx_text.replace(PROD_DOMAIN, BCKP_DOMAIN)
+
+
 # ─────────────────────────────────────────────────────────────
 print('=' * 60)
 print('UPDATE SERVIDOR BACKUP — abasepiaui.cloud')
@@ -171,6 +180,19 @@ ssh_run(bckp, f'cd {REPO} && git checkout {BCKP_BRANCH}')
 ssh_run(bckp, f'cd {REPO} && git pull --ff-only origin {BCKP_BRANCH}')
 print('\nCommit após pull:')
 ssh_run(bckp, f'cd {REPO} && git log --oneline -1')
+
+# ── 6b. Adaptar nginx.conf para o backup (domínio + SSL) ────
+print('\n=== [6b] ADAPTANDO nginx.conf PARA BACKUP ===')
+sftp2 = bckp.open_sftp()
+with sftp2.open(NGINX_CONF, 'r') as f:
+    nginx_original = f.read().decode('utf-8', errors='replace')
+nginx_backup = adapt_nginx_for_backup(nginx_original)
+with sftp2.open(NGINX_CONF, 'w') as f:
+    f.write(nginx_backup)
+sftp2.close()
+print(f'   nginx.conf ajustado para {BCKP_DOMAIN}')
+ssh_run(bckp, f'docker exec abase-nginx-prod nginx -t 2>&1', label='nginx -t')
+ssh_run(bckp, 'docker exec abase-nginx-prod nginx -s reload 2>&1', label='nginx -s reload')
 
 # ── 7. Build backend + celery (--no-cache) ──────────────────
 print('\n=== [7] BUILD BACKEND + CELERY (--no-cache) ===')
