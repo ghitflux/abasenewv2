@@ -267,11 +267,10 @@ class MotorReconciliacao:
             parcela.observacao = self._append_note(parcela.observacao, nota)
             parcela.save(update_fields=["status", "data_pagamento", "observacao", "updated_at"])
             propagate_competencia_status(parcela)
-
-        self._regularizar_associado(
-            parcela.associado,
-            f"Situação regularizada via arquivo retorno {self.arquivo_retorno.arquivo_nome}.",
-        )
+            self._regularizar_associado(
+                parcela.associado,
+                f"Situação regularizada via arquivo retorno {self.arquivo_retorno.arquivo_nome}.",
+            )
 
         item.resultado_processamento = ArquivoRetornoItem.ResultadoProcessamento.BAIXA_EFETUADA
         if permitir_diferenca:
@@ -292,16 +291,19 @@ class MotorReconciliacao:
         associado: Associado,
         parcela: Parcela,
     ) -> dict[str, object]:
-        if parcela.status != Parcela.Status.NAO_DESCONTADO:
+        parcela_mudou = parcela.status != Parcela.Status.NAO_DESCONTADO
+        if parcela_mudou:
             parcela.status = Parcela.Status.NAO_DESCONTADO
             parcela.data_pagamento = None
             parcela.observacao = self._append_note(parcela.observacao, item.status_descricao)
             parcela.save(update_fields=["status", "data_pagamento", "observacao", "updated_at"])
             propagate_competencia_status(parcela)
 
-        associado.observacao = self._append_note(associado.observacao, item.status_descricao)
-        associado.save(update_fields=["observacao", "updated_at"])
-        self._associados_para_sync[associado.id] = associado
+        new_obs = self._append_note(associado.observacao, item.status_descricao)
+        if new_obs != associado.observacao or parcela_mudou:
+            associado.observacao = new_obs
+            associado.save(update_fields=["observacao", "updated_at"])
+            self._associados_para_sync[associado.id] = associado
 
         item.motivo_rejeicao = item.status_descricao
         item.resultado_processamento = ArquivoRetornoItem.ResultadoProcessamento.NAO_DESCONTADO
@@ -429,8 +431,10 @@ class MotorReconciliacao:
             return
         if associado.status == Associado.Status.INATIVO:
             return
-        associado.observacao = self._append_note(associado.observacao, note)
-        associado.save(update_fields=["observacao", "updated_at"])
+        new_obs = self._append_note(associado.observacao, note)
+        if new_obs != associado.observacao:
+            associado.observacao = new_obs
+            associado.save(update_fields=["observacao", "updated_at"])
         self._associados_para_sync[associado.id] = associado
 
     @staticmethod

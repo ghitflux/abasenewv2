@@ -354,6 +354,27 @@ def _apply_renewal_transition_flags(resultados: list[dict], competencia: date) -
         if associado_id in marked_associados:
             continue
 
+        # Fast pre-checks before the expensive build_contract_cycle_projection call.
+        # 1) When a completed archive already exists for this competência, only
+        #    contracts whose associado is already APTO_A_RENOVAR can be flagged.
+        if has_persisted_snapshot_for_competencia and associado.status != Associado.Status.APTO_A_RENOVAR:
+            continue
+
+        # 2) Only contracts with at least one "baixa_efetuada mensalidade" row
+        #    can become eligible for renewal — skip the expensive projection early.
+        representative = next(
+            (
+                row
+                for row in rows_by_contract.get(contrato.id, [])
+                if row.get("resultado") == "baixa_efetuada"
+            ),
+            None,
+        )
+        if representative is None:
+            continue
+        if representative.get("categoria") != "mensalidades":
+            continue
+
         projection = build_contract_cycle_projection(contrato)
         projected_parcelas = _project_latest_cycle_parcelas(
             contrato,
@@ -372,22 +393,7 @@ def _apply_renewal_transition_flags(resultados: list[dict], competencia: date) -
         if not after_apto:
             continue
 
-        representative = next(
-            (
-                row
-                for row in rows_by_contract.get(contrato.id, [])
-                if row.get("resultado") == "baixa_efetuada"
-            ),
-            None,
-        )
-        if representative is None:
-            continue
-        if representative.get("categoria") != "mensalidades":
-            continue
-        if has_persisted_snapshot_for_competencia:
-            if associado.status != Associado.Status.APTO_A_RENOVAR:
-                continue
-        elif contrato.refinanciamentos.filter(
+        if not has_persisted_snapshot_for_competencia and contrato.refinanciamentos.filter(
             deleted_at__isnull=True,
             status__in=DRY_RUN_BLOCKING_RENEWAL_STATUSES,
         ).exists():
