@@ -802,6 +802,7 @@ class TesourariaRefinanciamentoViewSet(BaseRefinanciamentoViewSet):
             payload.validated_data.get("comprovante_associado"),
             payload.validated_data.get("comprovante_agente"),
             request.user,
+            proximo_ciclo_parcelas=payload.validated_data.get("proximo_ciclo_parcelas"),
         )
         serializer = RefinanciamentoDetailSerializer(
             refinanciamento, context=self.get_serializer_context()

@@ -297,6 +297,8 @@ export default function TesourariaRefinanciamentosPage() {
   const [excluirTarget, setExcluirTarget] = React.useState<RefinanciamentoItem | null>(null);
   const [retornarTarget, setRetornarTarget] = React.useState<RefinanciamentoItem | null>(null);
   const [limparLinhaTarget, setLimparLinhaTarget] = React.useState<RefinanciamentoItem | null>(null);
+  const [efetivarTarget, setEfetivarTarget] = React.useState<RefinanciamentoItem | null>(null);
+  const [efetivarCicloParcelas, setEfetivarCicloParcelas] = React.useState<3 | 4>(3);
 
   const agentesQuery = useQuery({
     queryKey: ["refinanciamentos-agentes"],
@@ -512,18 +514,21 @@ export default function TesourariaRefinanciamentosPage() {
   const efetivarMutation = useMutation({
     mutationFn: async ({
       refinanciamentoId,
+      proximoCicloParcelas,
     }: {
       refinanciamentoId: number;
+      proximoCicloParcelas: 3 | 4;
     }) =>
       apiFetch<RefinanciamentoItem>(
         `tesouraria/refinanciamentos/${refinanciamentoId}/efetivar`,
         {
           method: "POST",
-          body: {},
+          body: { proximo_ciclo_parcelas: proximoCicloParcelas },
         },
       ),
     onSuccess: () => {
       toast.success("Renovação efetivada com sucesso.");
+      setEfetivarTarget(null);
       void queryClient.invalidateQueries({
         queryKey: ["tesouraria-refinanciamentos"],
       });
@@ -747,9 +752,11 @@ export default function TesourariaRefinanciamentosPage() {
               size="sm"
               variant="outline"
               className="w-fit border-emerald-500/40 text-emerald-200"
-              onClick={() =>
-                efetivarMutation.mutate({ refinanciamentoId: row.id })
-              }
+              onClick={() => {
+                const total = row.mensalidades_total;
+                setEfetivarCicloParcelas(total === 4 ? 4 : 3);
+                setEfetivarTarget(row);
+              }}
               disabled={!canMutate || !hasRenewalPaymentProofs(row)}
             >
               <CheckCircle2Icon className="size-4" />
@@ -1639,6 +1646,69 @@ export default function TesourariaRefinanciamentosPage() {
           }
         }}
       />
+
+      <Dialog
+        open={efetivarTarget != null}
+        onOpenChange={(open) => {
+          if (!open && !efetivarMutation.isPending) setEfetivarTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmar efetivação da renovação</DialogTitle>
+            <DialogDescription>
+              A renovação de <strong>{efetivarTarget?.associado_nome}</strong> será
+              efetivada e um novo ciclo será gerado para o contrato. Selecione o
+              tamanho do próximo ciclo. Essa escolha vale para o ciclo que será
+              criado agora e para os próximos.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2 py-2">
+            <label className="text-sm text-muted-foreground">
+              Tamanho do próximo ciclo
+            </label>
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={efetivarCicloParcelas === 3 ? "default" : "outline"}
+                onClick={() => setEfetivarCicloParcelas(3)}
+                disabled={efetivarMutation.isPending}
+              >
+                3 parcelas (padrão)
+              </Button>
+              <Button
+                type="button"
+                variant={efetivarCicloParcelas === 4 ? "default" : "outline"}
+                onClick={() => setEfetivarCicloParcelas(4)}
+                disabled={efetivarMutation.isPending}
+              >
+                4 parcelas
+              </Button>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setEfetivarTarget(null)}
+              disabled={efetivarMutation.isPending}
+            >
+              Cancelar
+            </Button>
+            <Button
+              disabled={efetivarMutation.isPending}
+              onClick={() =>
+                efetivarTarget &&
+                efetivarMutation.mutate({
+                  refinanciamentoId: efetivarTarget.id,
+                  proximoCicloParcelas: efetivarCicloParcelas,
+                })
+              }
+            >
+              Efetivar e gerar próximo ciclo
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={excluirTarget != null} onOpenChange={(open) => { if (!open) setExcluirTarget(null); }}>
         <DialogContent>

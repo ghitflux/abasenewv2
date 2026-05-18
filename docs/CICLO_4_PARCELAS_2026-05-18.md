@@ -96,6 +96,33 @@ restantes são em `*.test.tsx` pré-existentes).
 - [ ] Cadastro (save-all): campo "Tamanho do ciclo" persiste
 - [ ] Filtro `eligibility_band` 3/4 e 4/4 lista corretamente na coordenação
 
+## Atualização: modal de efetivação 3/4 parcelas (mesmo dia)
+
+A efetivação na tesouraria agora abre um modal **"Confirmar efetivação da
+renovação"** onde o operador escolhe o tamanho do próximo ciclo (3 ou 4
+parcelas). A escolha:
+
+- Atualiza `contrato.prazo_meses` (passa a valer para os ciclos seguintes).
+- Garante que o ciclo destino seja criado mesmo quando a projeção
+  automática falha — fallback explícito em [services.py efetivar()](backend/apps/refinanciamento/services.py)
+  cria o `Ciclo` `numero=N+1` e suas parcelas em `em_previsao`.
+- Marca o ciclo origem como `ciclo_renovado` quando todas as parcelas dele
+  estão pagas, satisfazendo a regra "ciclo anterior muda de apto para
+  ativo/concluído quando renovado".
+
+Cobertura (`test_ciclo_quatro_parcelas.py`):
+- `test_efetivar_com_proximo_ciclo_3_cria_ciclo_destino_com_3_parcelas` ✅
+- `test_efetivar_com_proximo_ciclo_4_atualiza_prazo_e_cria_4_parcelas` ✅
+- `test_efetivar_rejeita_proximo_ciclo_invalido` ✅
+- + os 5 originais → **8/8**.
+
+Diagnóstico do caso JOSINEA (CPF 33947597304, refi 1493) no backup:
+contrato 121 está `encerrado` e a projeção atual só retornava 2 ciclos
+(n=1 renovado, n=2 aberto), nunca um n=3. Por isso o rebuild dentro de
+`efetivar()` não materializava o ciclo destino. O fallback explícito
+agora cobre esse caso e o reparo desse refi específico pode ser feito
+manualmente após o deploy.
+
 ## Procedimento de deploy
 
 1. Validar manualmente no **servidor backup** com este checklist.

@@ -499,6 +499,12 @@ class AprovarRefinanciamentoSerializer(serializers.Serializer):
 class EfetivarRefinanciamentoSerializer(serializers.Serializer):
     comprovante_associado = serializers.FileField(required=False, allow_null=True)
     comprovante_agente = serializers.FileField(required=False, allow_null=True)
+    proximo_ciclo_parcelas = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=3,
+        max_value=4,
+    )
 
 
 class SubstituirComprovanteRefinanciamentoSerializer(serializers.Serializer):

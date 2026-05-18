@@ -11,7 +11,11 @@ from rest_framework.exceptions import ValidationError
 from apps.associados.models import Associado
 from apps.contratos.cycle_projection import build_contract_cycle_projection
 from apps.contratos.cycle_rebuild import rebuild_contract_cycle_state
-from apps.contratos.cycle_timeline import get_contract_cycle_size
+from apps.contratos.cycle_timeline import (
+    add_months,
+    get_contract_cycle_size,
+    get_destination_cycle_start,
+)
 from apps.contratos.cycle_projection import sync_associado_mother_status
 from apps.contratos.models import Ciclo, Contrato, Parcela
 from apps.esteira.models import EsteiraItem, Transicao
@@ -1198,6 +1202,8 @@ class RefinanciamentoService:
         comprovante_associado,
         comprovante_agente,
         user,
+        *,
+        proximo_ciclo_parcelas: int | None = None,
     ) -> Refinanciamento:
         refinanciamento = RefinanciamentoService._get_refinanciamento(refinanciamento_id)
         if (
@@ -1211,6 +1217,15 @@ class RefinanciamentoService:
         contrato = refinanciamento.contrato_origem
         if contrato is None:
             raise ValidationError("Renovação sem contrato de origem.")
+
+        if proximo_ciclo_parcelas is not None:
+            if int(proximo_ciclo_parcelas) not in (3, 4):
+                raise ValidationError(
+                    "O próximo ciclo deve ter 3 ou 4 parcelas."
+                )
+            if int(contrato.prazo_meses or 0) != int(proximo_ciclo_parcelas):
+                contrato.prazo_meses = int(proximo_ciclo_parcelas)
+                contrato.save(update_fields=["prazo_meses", "updated_at"])
 
         executado_em = timezone.now()
         if comprovante_associado:
@@ -1269,6 +1284,74 @@ class RefinanciamentoService:
             )
             if refinanciamento.ciclo_destino_id is not None:
                 refinanciamento.save(update_fields=["ciclo_destino", "updated_at"])
+
+        if refinanciamento.ciclo_origem_id is not None:
+            ciclo_origem = refinanciamento.ciclo_origem
+            cycle_size = get_contract_cycle_size(contrato)
+            data_inicio = get_destination_cycle_start(ciclo_origem)
+
+            if refinanciamento.ciclo_destino_id is None:
+                data_fim = add_months(data_inicio, cycle_size - 1)
+                novo_ciclo = Ciclo.objects.create(
+                    contrato=contrato,
+                    numero=ciclo_origem.numero + 1,
+                    data_inicio=data_inicio,
+                    data_fim=data_fim,
+                    status=Ciclo.Status.ABERTO,
+                    valor_total=(contrato.valor_mensalidade or Decimal("0")) * cycle_size,
+                )
+                refinanciamento.ciclo_destino = novo_ciclo
+                refinanciamento.save(update_fields=["ciclo_destino", "updated_at"])
+            else:
+                novo_ciclo = refinanciamento.ciclo_destino
+
+            existing_refs = {
+                parcela.referencia_mes
+                for parcela in novo_ciclo.parcelas.filter(deleted_at__isnull=True)
+            }
+            existing_count = len(existing_refs)
+            if existing_count < cycle_size:
+                next_numero = (
+                    novo_ciclo.parcelas.filter(deleted_at__isnull=True)
+                    .order_by("-numero")
+                    .values_list("numero", flat=True)
+                    .first()
+                    or 0
+                ) + 1
+                for index in range(cycle_size):
+                    referencia = add_months(data_inicio, index)
+                    if referencia in existing_refs:
+                        continue
+                    Parcela.objects.create(
+                        ciclo=novo_ciclo,
+                        associado=contrato.associado,
+                        numero=next_numero,
+                        referencia_mes=referencia,
+                        valor=contrato.valor_mensalidade or Decimal("0"),
+                        data_vencimento=referencia,
+                        status=Parcela.Status.EM_PREVISAO,
+                    )
+                    next_numero += 1
+                expected_total = (contrato.valor_mensalidade or Decimal("0")) * cycle_size
+                if novo_ciclo.valor_total != expected_total:
+                    novo_ciclo.valor_total = expected_total
+                    novo_ciclo.save(update_fields=["valor_total", "updated_at"])
+
+            if (
+                ciclo_origem.status
+                not in (Ciclo.Status.CICLO_RENOVADO, "ciclo_renovado")
+                and not any(
+                    parcela.status
+                    not in (
+                        Parcela.Status.DESCONTADO,
+                        Parcela.Status.LIQUIDADA,
+                        "quitada",
+                    )
+                    for parcela in ciclo_origem.parcelas.filter(deleted_at__isnull=True)
+                )
+            ):
+                ciclo_origem.status = Ciclo.Status.CICLO_RENOVADO
+                ciclo_origem.save(update_fields=["status", "updated_at"])
         for papel in [Comprovante.Papel.ASSOCIADO, Comprovante.Papel.AGENTE]:
             comprovante = RefinanciamentoService._latest_payment_comprovante(
                 refinanciamento,

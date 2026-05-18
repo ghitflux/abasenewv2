@@ -14,7 +14,7 @@ from apps.associados.models import Associado
 from apps.contratos.cycle_rebuild import rebuild_contract_cycle_state
 from apps.contratos.models import Contrato
 from apps.importacao.models import PagamentoMensalidade
-from apps.refinanciamento.models import Refinanciamento
+from apps.refinanciamento.models import Comprovante, Refinanciamento
 from apps.refinanciamento.services import RefinanciamentoService
 from apps.tesouraria.models import Pagamento
 
@@ -257,6 +257,158 @@ class CicloQuatroParcelasTestCase(TestCase):
         )
         contrato.refresh_from_db()
         self.assertEqual(contrato.prazo_meses, 4)
+
+    # ----------------------- efetivar tesouraria: modal 3/4 -------------------
+
+    def _build_concluido_refi_ciclo3(
+        self,
+        cpf: str = "55544433322",
+    ) -> Refinanciamento:
+        from apps.contratos.models import Ciclo, Parcela
+
+        associado = Associado.objects.create(
+            nome_completo="Cadastro Efetivar 3",
+            cpf_cnpj=cpf,
+            email=f"{cpf}@teste.local",
+            telefone="86988887766",
+            orgao_publico="SEFAZ",
+            matricula_orgao=f"E-{cpf[-4:]}",
+            status=Associado.Status.APTO_A_RENOVAR,
+            agente_responsavel=self.agente,
+        )
+        contrato = Contrato.objects.create(
+            associado=associado,
+            agente=self.agente,
+            valor_bruto=Decimal("1500.00"),
+            valor_liquido=Decimal("1200.00"),
+            margem_disponivel=Decimal("900.00"),
+            valor_mensalidade=Decimal("500.00"),
+            prazo_meses=3,
+            status=Contrato.Status.ATIVO,
+            data_contrato=date(2025, 12, 15),
+            data_aprovacao=date(2025, 12, 20),
+            data_primeira_mensalidade=date(2026, 1, 1),
+        )
+        Pagamento.objects.create(
+            cadastro=associado,
+            created_by=self.admin,
+            contrato_codigo=contrato.codigo,
+            contrato_valor_antecipacao=contrato.valor_liquido,
+            cpf_cnpj=associado.cpf_cnpj,
+            full_name=associado.nome_completo,
+            status=Pagamento.Status.PAGO,
+            valor_pago=contrato.valor_liquido,
+            paid_at=timezone.make_aware(
+                datetime.combine(date(2025, 12, 20), datetime.min.time())
+            ),
+            forma_pagamento="pix",
+        )
+        ciclo = Ciclo.objects.create(
+            contrato=contrato,
+            numero=1,
+            data_inicio=date(2026, 1, 1),
+            data_fim=date(2026, 3, 1),
+            status=Ciclo.Status.APTO_A_RENOVAR,
+            valor_total=Decimal("1500.00"),
+        )
+        Parcela.objects.bulk_create([
+            Parcela(
+                ciclo=ciclo,
+                associado=associado,
+                numero=i + 1,
+                referencia_mes=ref,
+                valor=Decimal("500.00"),
+                data_vencimento=ref,
+                status=Parcela.Status.DESCONTADO,
+                data_pagamento=ref,
+            )
+            for i, ref in enumerate(
+                [date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1)]
+            )
+        ])
+        refi = Refinanciamento.objects.create(
+            associado=associado,
+            contrato_origem=contrato,
+            solicitado_por=self.agente,
+            competencia_solicitada=date(2026, 3, 1),
+            status=Refinanciamento.Status.APROVADO_PARA_RENOVACAO,
+            ciclo_origem=ciclo,
+            valor_refinanciamento=contrato.valor_liquido,
+            origem=Refinanciamento.Origem.OPERACIONAL,
+            cycle_key="2026-01|2026-02|2026-03",
+            ref1=date(2026, 1, 1),
+            ref2=date(2026, 2, 1),
+            ref3=date(2026, 3, 1),
+            cpf_cnpj_snapshot=associado.cpf_cnpj,
+            nome_snapshot=associado.nome_completo,
+            contrato_codigo_origem=contrato.codigo,
+            parcelas_ok=3,
+        )
+        for papel in (Comprovante.Papel.ASSOCIADO, Comprovante.Papel.AGENTE):
+            Comprovante.objects.create(
+                refinanciamento=refi,
+                contrato=contrato,
+                ciclo=ciclo,
+                tipo=Comprovante.Tipo.COMPROVANTE_PAGAMENTO_ASSOCIADO
+                if papel == Comprovante.Papel.ASSOCIADO
+                else Comprovante.Tipo.COMPROVANTE_PAGAMENTO_AGENTE,
+                papel=papel,
+                origem=Comprovante.Origem.TESOURARIA_RENOVACAO,
+                arquivo=self._termo_file(),
+                nome_original="comprovante.pdf",
+                enviado_por=self.admin,
+            )
+        return refi
+
+    def test_efetivar_com_proximo_ciclo_3_cria_ciclo_destino_com_3_parcelas(self):
+        from apps.refinanciamento.services import RefinanciamentoService
+
+        refi = self._build_concluido_refi_ciclo3(cpf="55544433321")
+        refi = RefinanciamentoService.efetivar(
+            refi.id,
+            comprovante_associado=None,
+            comprovante_agente=None,
+            user=self.admin,
+            proximo_ciclo_parcelas=3,
+        )
+        refi.refresh_from_db()
+        self.assertEqual(refi.status, Refinanciamento.Status.EFETIVADO)
+        self.assertIsNotNone(refi.ciclo_destino_id, "ciclo_destino deveria ter sido criado")
+        self.assertEqual(refi.ciclo_destino.parcelas.count(), 3)
+        self.assertEqual(refi.contrato_origem.prazo_meses, 3)
+
+    def test_efetivar_com_proximo_ciclo_4_atualiza_prazo_e_cria_4_parcelas(self):
+        from apps.refinanciamento.services import RefinanciamentoService
+
+        refi = self._build_concluido_refi_ciclo3(cpf="55544433322")
+        refi = RefinanciamentoService.efetivar(
+            refi.id,
+            comprovante_associado=None,
+            comprovante_agente=None,
+            user=self.admin,
+            proximo_ciclo_parcelas=4,
+        )
+        refi.refresh_from_db()
+        contrato = refi.contrato_origem
+        contrato.refresh_from_db()
+        self.assertEqual(contrato.prazo_meses, 4, "contrato.prazo_meses deve passar a 4")
+        self.assertIsNotNone(refi.ciclo_destino_id)
+        self.assertEqual(refi.ciclo_destino.parcelas.count(), 4)
+        self.assertEqual(refi.ciclo_destino.numero, 2)
+
+    def test_efetivar_rejeita_proximo_ciclo_invalido(self):
+        from apps.refinanciamento.services import RefinanciamentoService
+        from rest_framework.exceptions import ValidationError
+
+        refi = self._build_concluido_refi_ciclo3(cpf="55544433323")
+        with self.assertRaises(ValidationError):
+            RefinanciamentoService.efetivar(
+                refi.id,
+                comprovante_associado=None,
+                comprovante_agente=None,
+                user=self.admin,
+                proximo_ciclo_parcelas=5,
+            )
 
     def test_admin_rejeita_prazo_meses_invalido(self):
         """Serializer/serviço devem rejeitar prazo_meses fora de {3, 4}."""
