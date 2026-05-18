@@ -823,6 +823,7 @@ def _contract_core_payload_has_effective_changes(
         "valor_bruto",
         "valor_liquido",
         "valor_mensalidade",
+        "prazo_meses",
         "taxa_antecipacao",
         "margem_disponivel",
         "valor_total_antecipacao",
@@ -844,6 +845,13 @@ def _contract_core_payload_has_effective_changes(
             if (current_value or None) != (
                 normalized_next.isoformat() if normalized_next else None
             ):
+                return True
+            continue
+        if field == "prazo_meses":
+            try:
+                if int(current_value or 0) != int(next_value or 0):
+                    return True
+            except (TypeError, ValueError):
                 return True
             continue
         if field in {
@@ -3149,6 +3157,7 @@ class AdminOverrideService:
                     "valor_mensalidade": "mensalidade",
                     "margem_disponivel": "margem_disponivel",
                 }
+                prazo_changed_save_all = False
                 for field, source_key in contract_fields.items():
                     if source_key not in payload or payload.get(source_key) in (None, ""):
                         continue
@@ -3159,16 +3168,25 @@ class AdminOverrideService:
                             next_value=value,
                             field_name="mensalidade",
                         )
-                    setattr(
-                        contrato,
-                        field,
-                        int(value) if field == "prazo_meses" else _parse_decimal(value),
-                    )
+                    if field == "prazo_meses":
+                        new_prazo = int(value)
+                        if new_prazo not in (3, 4):
+                            raise ValidationError(
+                                "prazo_meses deve ser 3 ou 4 (tamanho do ciclo de parcelas)."
+                            )
+                        if int(contrato.prazo_meses or 0) != new_prazo:
+                            prazo_changed_save_all = True
+                        setattr(contrato, field, new_prazo)
+                    else:
+                        setattr(contrato, field, _parse_decimal(value))
                 if "status_contrato" in payload:
                     contrato.status = str(payload.get("status_contrato") or contrato.status)
                 if "agente_responsavel_id" in payload:
                     contrato.agente_id = payload.get("agente_responsavel_id")
                 contrato.save()
+                if prazo_changed_save_all:
+                    rebuild_contract_cycle_state(contrato)
+                    contrato.refresh_from_db()
 
             after_associado = _serialize_associado(associado)
             after_contrato = (
@@ -3247,6 +3265,16 @@ class AdminOverrideService:
             ]:
                 if field in payload:
                     setattr(contrato, field, payload.get(field))
+            prazo_changed = False
+            if "prazo_meses" in payload and payload.get("prazo_meses") not in (None, ""):
+                new_prazo = int(payload.get("prazo_meses"))
+                if new_prazo not in (3, 4):
+                    raise ValidationError(
+                        "prazo_meses deve ser 3 ou 4 (tamanho do ciclo de parcelas)."
+                    )
+                if int(contrato.prazo_meses or 0) != new_prazo:
+                    contrato.prazo_meses = new_prazo
+                    prazo_changed = True
             for field in numeric_fields:
                 if field in payload and payload.get(field) not in (None, ""):
                     value = payload.get(field)
@@ -3269,6 +3297,9 @@ class AdminOverrideService:
                 if field in payload:
                     setattr(contrato, field, _parse_optional_date(payload.get(field)))
             contrato.save()
+            if prazo_changed:
+                rebuild_contract_cycle_state(contrato)
+                contrato.refresh_from_db()
             after = _serialize_contrato(contrato, include_ciclos=False)
             AdminOverrideService._record_event(
                 context=_OverrideContext(associado=contrato.associado, contrato=contrato),

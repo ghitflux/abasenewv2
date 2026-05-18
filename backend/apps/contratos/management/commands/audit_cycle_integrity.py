@@ -322,8 +322,7 @@ class Command(BaseCommand):
         contrato: Contrato,
         parcelas: list[Parcela],
     ) -> list[dict[str, object]]:
-        if get_contract_cycle_size(contrato) != 3:
-            return []
+        cycle_size = get_contract_cycle_size(contrato)
         by_cycle: defaultdict[int, list[Parcela]] = defaultdict(list)
         for parcela in parcelas:
             if parcela.layout_bucket == Parcela.LayoutBucket.CYCLE:
@@ -335,14 +334,14 @@ class Command(BaseCommand):
                 by_cycle.get(ciclo.id, []),
                 key=lambda item: (item.referencia_mes, item.numero, item.id),
             )
-            if len(cycle_rows) <= 3:
+            if len(cycle_rows) <= cycle_size:
                 continue
             status_counter = Counter(str(parcela.status or "") for parcela in cycle_rows)
             violations.append(
                 {
                     "cycle_id": ciclo.id,
                     "cycle_number": ciclo.numero,
-                    "cycle_size": 3,
+                    "cycle_size": cycle_size,
                     "total_cycle_parcelas": len(cycle_rows),
                     "status_pattern": ", ".join(
                         f"{status}={count}"
@@ -362,8 +361,7 @@ class Command(BaseCommand):
         return violations
 
     def _repair_cycle_size_violations(self, contrato: Contrato) -> int:
-        if get_contract_cycle_size(contrato) != 3:
-            return 0
+        cycle_size = get_contract_cycle_size(contrato)
         changed = 0
         active_cycles = list(
             contrato.ciclos.filter(deleted_at__isnull=True).order_by("numero", "id")
@@ -388,9 +386,9 @@ class Command(BaseCommand):
                 .exclude(status=Parcela.Status.CANCELADO)
                 .order_by("referencia_mes", "numero", "id")
             )
-            if len(cycle_rows) <= 3:
+            if len(cycle_rows) <= cycle_size:
                 continue
-            extras = cycle_rows[3:]
+            extras = cycle_rows[cycle_size:]
             next_cycle = next_cycle_by_number.get(ciclo.numero)
             next_cycle_count = (
                 Parcela.all_objects.filter(
@@ -417,7 +415,7 @@ class Command(BaseCommand):
                         parcela.save(update_fields=["layout_bucket", "updated_at"])
                         changed += 1
                     continue
-                if next_cycle is not None and next_cycle_count < 3:
+                if next_cycle is not None and next_cycle_count < cycle_size:
                     parcela.ciclo = next_cycle
                     parcela.layout_bucket = Parcela.LayoutBucket.CYCLE
                     parcela.save(update_fields=["ciclo", "layout_bucket", "updated_at"])

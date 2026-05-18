@@ -292,7 +292,7 @@ class AssociadoCoreOverrideWriteSerializer(serializers.Serializer):
         required=False,
     )
     valor_liquido = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
-    prazo_meses = serializers.IntegerField(required=False, min_value=1)
+    prazo_meses = serializers.IntegerField(required=False, min_value=3, max_value=4)
     taxa_antecipacao = serializers.DecimalField(
         max_digits=5,
         decimal_places=2,
@@ -314,6 +314,7 @@ class ContratoCoreOverrideWriteSerializer(serializers.Serializer):
     contato_web = serializers.BooleanField(required=False)
     termos_web = serializers.BooleanField(required=False)
     agente_id = serializers.IntegerField(required=False, allow_null=True)
+    prazo_meses = serializers.IntegerField(required=False, min_value=3, max_value=4)
     valor_bruto = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     valor_liquido = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     valor_mensalidade = serializers.DecimalField(
@@ -425,6 +426,7 @@ class SaveAllContratoCoreWriteSerializer(serializers.Serializer):
     contato_web = serializers.BooleanField(required=False)
     termos_web = serializers.BooleanField(required=False)
     agente_id = serializers.IntegerField(required=False, allow_null=True)
+    prazo_meses = serializers.IntegerField(required=False, min_value=3, max_value=4)
     valor_bruto = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     valor_liquido = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
     valor_mensalidade = serializers.DecimalField(

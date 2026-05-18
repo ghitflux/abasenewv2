@@ -102,6 +102,7 @@ export type SaveAllContratoCorePayload = {
   valor_bruto: string;
   valor_liquido: string;
   valor_mensalidade: string;
+  prazo_meses: number;
   taxa_antecipacao: string;
   margem_disponivel: string;
   valor_total_antecipacao: string;
@@ -291,6 +292,7 @@ function buildContractCorePayload(
     valor_bruto: contract.valor_bruto,
     valor_liquido: contract.valor_liquido,
     valor_mensalidade: contract.valor_mensalidade,
+    prazo_meses: Number(contract.prazo_meses ?? 3),
     taxa_antecipacao: contract.taxa_antecipacao,
     margem_disponivel: contract.margem_disponivel,
     valor_total_antecipacao: contract.valor_total_antecipacao,
@@ -1286,6 +1288,28 @@ const AdminContractEditor = React.forwardRef<AdminContractEditorHandle, Props>(
                     }))
                   }
                 />
+              </AdminField>
+              <AdminField
+                label="Tamanho do ciclo (parcelas)"
+                tooltip="Quantidade de parcelas que compõem cada ciclo de renovação. 3 é o padrão; 4 é a regra alternativa. Mudanças afetam apenas os ciclos futuros."
+              >
+                <Select
+                  value={String(draft.prazo_meses ?? 3)}
+                  onValueChange={(value) =>
+                    setDraft((current) => ({
+                      ...current,
+                      prazo_meses: Number(value),
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="3">3 parcelas (padrão)</SelectItem>
+                    <SelectItem value="4">4 parcelas</SelectItem>
+                  </SelectContent>
+                </Select>
               </AdminField>
               <AdminField
                 label="Taxa antecipação"
