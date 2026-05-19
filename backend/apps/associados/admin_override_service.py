@@ -3158,6 +3158,11 @@ class AdminOverrideService:
                     "margem_disponivel": "margem_disponivel",
                 }
                 prazo_changed_save_all = False
+                old_prazo_save_all = int(contrato.prazo_meses or 0)
+                comissao_no_payload = (
+                    "comissao_agente" in payload
+                    and payload.get("comissao_agente") not in (None, "")
+                )
                 for field, source_key in contract_fields.items():
                     if source_key not in payload or payload.get(source_key) in (None, ""):
                         continue
@@ -3174,8 +3179,22 @@ class AdminOverrideService:
                             raise ValidationError(
                                 "prazo_meses deve ser 3 ou 4 (tamanho do ciclo de parcelas)."
                             )
-                        if int(contrato.prazo_meses or 0) != new_prazo:
+                        if old_prazo_save_all != new_prazo:
                             prazo_changed_save_all = True
+                            # Recalcula comissao proporcionalmente, exceto se o
+                            # operador estiver sobrescrevendo explicitamente.
+                            if (
+                                not comissao_no_payload
+                                and old_prazo_save_all > 0
+                                and contrato.comissao_agente
+                            ):
+                                contrato.comissao_agente = (
+                                    (
+                                        Decimal(contrato.comissao_agente)
+                                        * Decimal(new_prazo)
+                                    )
+                                    / Decimal(old_prazo_save_all)
+                                ).quantize(Decimal("0.01"))
                         setattr(contrato, field, new_prazo)
                     else:
                         setattr(contrato, field, _parse_decimal(value))
@@ -3266,14 +3285,31 @@ class AdminOverrideService:
                 if field in payload:
                     setattr(contrato, field, payload.get(field))
             prazo_changed = False
+            old_prazo_meses = int(contrato.prazo_meses or 0)
             if "prazo_meses" in payload and payload.get("prazo_meses") not in (None, ""):
                 new_prazo = int(payload.get("prazo_meses"))
                 if new_prazo not in (3, 4):
                     raise ValidationError(
                         "prazo_meses deve ser 3 ou 4 (tamanho do ciclo de parcelas)."
                     )
-                if int(contrato.prazo_meses or 0) != new_prazo:
+                if old_prazo_meses != new_prazo:
                     contrato.prazo_meses = new_prazo
+                    # Recalcula a comissao do agente proporcionalmente ao novo
+                    # tamanho do ciclo. Apenas se "comissao_agente" nao vier
+                    # explicitamente no payload (operador pode sobrescrever).
+                    payload_has_comissao = (
+                        "comissao_agente" in payload
+                        and payload.get("comissao_agente") not in (None, "")
+                    )
+                    if (
+                        not payload_has_comissao
+                        and old_prazo_meses > 0
+                        and contrato.comissao_agente
+                    ):
+                        contrato.comissao_agente = (
+                            (Decimal(contrato.comissao_agente) * Decimal(new_prazo))
+                            / Decimal(old_prazo_meses)
+                        ).quantize(Decimal("0.01"))
                     prazo_changed = True
             for field in numeric_fields:
                 if field in payload and payload.get(field) not in (None, ""):

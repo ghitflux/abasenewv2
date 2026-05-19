@@ -547,6 +547,20 @@ class RefinanciamentoService:
             contrato
         )
         if refinanciamento is None:
+            # Fallback: a strategy ja aprovou elegibilidade, mas o rebuild pode
+            # ter sido bloqueado por um refi anterior em REVERTIDO/DESATIVADO no
+            # mesmo ciclo (has_cancelled_operational_refinanciamento). Forca a
+            # materializacao porque o usuario esta explicitamente solicitando.
+            rebuild_contract_cycle_state(
+                contrato,
+                execute=True,
+                force_active_operational_status=Refinanciamento.Status.APTO_A_RENOVAR,
+            )
+            contrato.refresh_from_db()
+            refinanciamento = RefinanciamentoService._active_operational_refinanciamento(
+                contrato
+            )
+        if refinanciamento is None:
             raise ValidationError(
                 "A fila operacional de renovação não pôde ser materializada."
             )
@@ -680,6 +694,20 @@ class RefinanciamentoService:
         _, refinanciamento = RefinanciamentoService._sync_contract_and_get_refi(
             contrato
         )
+        if refinanciamento is None:
+            # Fallback: a strategy ja aprovou elegibilidade, mas o rebuild pode
+            # ter sido bloqueado por um refi anterior em REVERTIDO/DESATIVADO no
+            # mesmo ciclo (has_cancelled_operational_refinanciamento). Forca a
+            # materializacao porque o usuario esta explicitamente solicitando.
+            rebuild_contract_cycle_state(
+                contrato,
+                execute=True,
+                force_active_operational_status=Refinanciamento.Status.APTO_A_RENOVAR,
+            )
+            contrato.refresh_from_db()
+            refinanciamento = RefinanciamentoService._active_operational_refinanciamento(
+                contrato
+            )
         if refinanciamento is None:
             raise ValidationError(
                 "A fila operacional de renovação não pôde ser materializada."
@@ -1357,8 +1385,27 @@ class RefinanciamentoService:
             proximo_ciclo_parcelas is not None
             and int(contrato.prazo_meses or 0) != int(proximo_ciclo_parcelas)
         ):
+            old_prazo_efetivar = int(contrato.prazo_meses or 0)
             contrato.prazo_meses = int(proximo_ciclo_parcelas)
-            contrato.save(update_fields=["prazo_meses", "updated_at"])
+            update_fields = ["prazo_meses", "updated_at"]
+            # Recalcula comissao proporcionalmente: 3->4 *= 4/3, 4->3 *= 3/4.
+            if old_prazo_efetivar > 0 and contrato.comissao_agente:
+                contrato.comissao_agente = (
+                    (
+                        Decimal(contrato.comissao_agente)
+                        * Decimal(int(proximo_ciclo_parcelas))
+                    )
+                    / Decimal(old_prazo_efetivar)
+                ).quantize(Decimal("0.01"))
+                update_fields.append("comissao_agente")
+            contrato.save(update_fields=update_fields)
+            # Atualiza tambem o repasse do refinanciamento para refletir
+            # imediatamente na tela da tesouraria.
+            if "comissao_agente" in update_fields:
+                refinanciamento.repasse_agente = contrato.comissao_agente
+                refinanciamento.save(
+                    update_fields=["repasse_agente", "updated_at"]
+                )
 
         for papel in [Comprovante.Papel.ASSOCIADO, Comprovante.Papel.AGENTE]:
             comprovante = RefinanciamentoService._latest_payment_comprovante(

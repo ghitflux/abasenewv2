@@ -284,6 +284,7 @@ class CicloQuatroParcelasTestCase(TestCase):
             margem_disponivel=Decimal("900.00"),
             valor_mensalidade=Decimal("500.00"),
             prazo_meses=3,
+            comissao_agente=Decimal("90.00"),
             status=Contrato.Status.ATIVO,
             data_contrato=date(2025, 12, 15),
             data_aprovacao=date(2025, 12, 20),
@@ -404,6 +405,85 @@ class CicloQuatroParcelasTestCase(TestCase):
             3,
             "Ciclo origem nao pode ser re-projetado para 4 parcelas",
         )
+
+    def test_efetivar_3_para_4_recalcula_comissao_e_repasse(self):
+        """Mudando 3->4 na efetivacao, comissao deve subir proporcionalmente (90 -> 120)."""
+        from apps.refinanciamento.services import RefinanciamentoService
+
+        refi = self._build_concluido_refi_ciclo3(cpf="55544433324")
+        self.assertEqual(refi.contrato_origem.comissao_agente, Decimal("90.00"))
+        refi = RefinanciamentoService.efetivar(
+            refi.id,
+            comprovante_associado=None,
+            comprovante_agente=None,
+            user=self.admin,
+            proximo_ciclo_parcelas=4,
+        )
+        refi.refresh_from_db()
+        contrato = refi.contrato_origem
+        contrato.refresh_from_db()
+        self.assertEqual(contrato.prazo_meses, 4)
+        self.assertEqual(
+            contrato.comissao_agente,
+            Decimal("120.00"),
+            "Comissao 3->4 deve ser 90 * 4/3 = 120",
+        )
+        self.assertEqual(
+            refi.repasse_agente,
+            Decimal("120.00"),
+            "Repasse do refi deve refletir a nova comissao",
+        )
+
+    def test_admin_override_3_para_4_recalcula_comissao(self):
+        """apply_contract_core_override deve escalar a comissao com o prazo."""
+        from apps.associados.admin_override_service import AdminOverrideService
+
+        refi = self._build_concluido_refi_ciclo3(cpf="55544433325")
+        contrato = refi.contrato_origem
+        self.assertEqual(contrato.comissao_agente, Decimal("90.00"))
+        AdminOverrideService.apply_contract_core_override(
+            contrato=contrato,
+            payload={
+                "motivo": "Mudar para ciclo 4",
+                "prazo_meses": 4,
+                "updated_at": contrato.updated_at,
+            },
+            user=self.admin,
+        )
+        contrato.refresh_from_db()
+        self.assertEqual(contrato.prazo_meses, 4)
+        self.assertEqual(
+            contrato.comissao_agente,
+            Decimal("120.00"),
+            "Comissao admin 3->4 deve ser 90 * 4/3 = 120",
+        )
+
+    def test_solicitar_apos_revertido_forca_materializacao(self):
+        """Solicitar funciona mesmo com refi anterior em REVERTIDO bloqueando rebuild."""
+        from apps.refinanciamento.services import RefinanciamentoService
+
+        contrato = self._create_contrato_ciclo_4(cpf="66677788899")
+        self._create_pagamento(contrato, date(2026, 1, 1))
+        self._create_pagamento(contrato, date(2026, 2, 1))
+        self._create_pagamento(contrato, date(2026, 3, 1))
+        # primeira materializacao normal
+        from apps.contratos.cycle_rebuild import rebuild_contract_cycle_state
+        rebuild_contract_cycle_state(contrato, execute=True)
+        refi_original = RefinanciamentoService._active_operational_refinanciamento(contrato)
+        self.assertIsNotNone(refi_original)
+        # simula a reversao do refi
+        refi_original.status = Refinanciamento.Status.REVERTIDO
+        refi_original.save(update_fields=["status", "updated_at"])
+        # agora solicitar deve forcar a criacao de novo refi APTO
+        response = self.admin_client.post(
+            f"/api/v1/refinanciamentos/{contrato.id}/solicitar/",
+            {"termo_antecipacao": self._termo_file()},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 201, response.json())
+        # confirma que um novo refi foi criado (ou reaproveitado) em EM_ANALISE
+        refi_novo = Refinanciamento.objects.get(pk=response.json()["id"])
+        self.assertEqual(refi_novo.status, Refinanciamento.Status.EM_ANALISE_RENOVACAO)
 
     def test_efetivar_rejeita_proximo_ciclo_invalido(self):
         from apps.refinanciamento.services import RefinanciamentoService
