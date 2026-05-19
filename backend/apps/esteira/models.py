@@ -89,7 +89,7 @@ class Transicao(BaseModel):
     esteira_item = models.ForeignKey(
         EsteiraItem, on_delete=models.CASCADE, related_name="transicoes"
     )
-    acao = models.CharField(max_length=40, blank=True)
+    acao = models.CharField(max_length=80, blank=True)
     de_status = models.CharField(max_length=20, choices=EsteiraItem.Etapa.choices)
     para_status = models.CharField(max_length=20, choices=EsteiraItem.Etapa.choices)
     de_situacao = models.CharField(

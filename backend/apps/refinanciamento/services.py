@@ -1141,7 +1141,7 @@ class RefinanciamentoService:
             RefinanciamentoService._registrar_auditoria(
                 contrato,
                 user,
-                "retornar_refinanciamento_para_pendente_pagamento",
+                "retornar_para_pendente_pagamento",
                 "Renovação devolvida para pendente de pagamento na fila da tesouraria.",
             )
         return refinanciamento
