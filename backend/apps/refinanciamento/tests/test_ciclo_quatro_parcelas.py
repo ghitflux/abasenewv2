@@ -381,6 +381,7 @@ class CicloQuatroParcelasTestCase(TestCase):
         from apps.refinanciamento.services import RefinanciamentoService
 
         refi = self._build_concluido_refi_ciclo3(cpf="55544433322")
+        ciclo_origem_id = refi.ciclo_origem_id
         refi = RefinanciamentoService.efetivar(
             refi.id,
             comprovante_associado=None,
@@ -395,6 +396,14 @@ class CicloQuatroParcelasTestCase(TestCase):
         self.assertIsNotNone(refi.ciclo_destino_id)
         self.assertEqual(refi.ciclo_destino.parcelas.count(), 4)
         self.assertEqual(refi.ciclo_destino.numero, 2)
+        # Regressao: ciclo origem (anterior) NUNCA pode mudar de tamanho
+        from apps.contratos.models import Ciclo
+        ciclo_origem = Ciclo.objects.get(pk=ciclo_origem_id)
+        self.assertEqual(
+            ciclo_origem.parcelas.filter(deleted_at__isnull=True).count(),
+            3,
+            "Ciclo origem nao pode ser re-projetado para 4 parcelas",
+        )
 
     def test_efetivar_rejeita_proximo_ciclo_invalido(self):
         from apps.refinanciamento.services import RefinanciamentoService

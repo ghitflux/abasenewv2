@@ -1218,14 +1218,10 @@ class RefinanciamentoService:
         if contrato is None:
             raise ValidationError("Renovação sem contrato de origem.")
 
-        if proximo_ciclo_parcelas is not None:
-            if int(proximo_ciclo_parcelas) not in (3, 4):
-                raise ValidationError(
-                    "O próximo ciclo deve ter 3 ou 4 parcelas."
-                )
-            if int(contrato.prazo_meses or 0) != int(proximo_ciclo_parcelas):
-                contrato.prazo_meses = int(proximo_ciclo_parcelas)
-                contrato.save(update_fields=["prazo_meses", "updated_at"])
+        if proximo_ciclo_parcelas is not None and int(proximo_ciclo_parcelas) not in (3, 4):
+            raise ValidationError(
+                "O próximo ciclo deve ter 3 ou 4 parcelas."
+            )
 
         executado_em = timezone.now()
         if comprovante_associado:
@@ -1287,7 +1283,11 @@ class RefinanciamentoService:
 
         if refinanciamento.ciclo_origem_id is not None:
             ciclo_origem = refinanciamento.ciclo_origem
-            cycle_size = get_contract_cycle_size(contrato)
+            cycle_size = (
+                int(proximo_ciclo_parcelas)
+                if proximo_ciclo_parcelas is not None
+                else get_contract_cycle_size(contrato)
+            )
             data_inicio = get_destination_cycle_start(ciclo_origem)
 
             if refinanciamento.ciclo_destino_id is None:
@@ -1352,6 +1352,14 @@ class RefinanciamentoService:
             ):
                 ciclo_origem.status = Ciclo.Status.CICLO_RENOVADO
                 ciclo_origem.save(update_fields=["status", "updated_at"])
+
+        if (
+            proximo_ciclo_parcelas is not None
+            and int(contrato.prazo_meses or 0) != int(proximo_ciclo_parcelas)
+        ):
+            contrato.prazo_meses = int(proximo_ciclo_parcelas)
+            contrato.save(update_fields=["prazo_meses", "updated_at"])
+
         for papel in [Comprovante.Papel.ASSOCIADO, Comprovante.Papel.AGENTE]:
             comprovante = RefinanciamentoService._latest_payment_comprovante(
                 refinanciamento,
