@@ -1320,45 +1320,116 @@ class RefinanciamentoService:
 
             if refinanciamento.ciclo_destino_id is None:
                 data_fim = add_months(data_inicio, cycle_size - 1)
-                novo_ciclo = Ciclo.objects.create(
-                    contrato=contrato,
-                    numero=ciclo_origem.numero + 1,
-                    data_inicio=data_inicio,
-                    data_fim=data_fim,
-                    status=Ciclo.Status.ABERTO,
-                    valor_total=(contrato.valor_mensalidade or Decimal("0")) * cycle_size,
+                destino_numero = ciclo_origem.numero + 1
+                # UNIQUE(contrato, numero) inclui linhas soft-deleted no MySQL.
+                # Se houve uma tentativa anterior que foi revertida e deixou um
+                # ciclo soft-deleted com este numero, reutilizamos restaurando.
+                ciclo_existente = (
+                    Ciclo.all_objects.filter(
+                        contrato=contrato,
+                        numero=destino_numero,
+                    )
+                    .order_by("-id")
+                    .first()
                 )
+                if ciclo_existente is not None:
+                    novo_ciclo = ciclo_existente
+                    if novo_ciclo.deleted_at is not None:
+                        novo_ciclo.deleted_at = None
+                    novo_ciclo.status = Ciclo.Status.ABERTO
+                    novo_ciclo.data_inicio = data_inicio
+                    novo_ciclo.data_fim = data_fim
+                    novo_ciclo.valor_total = (
+                        contrato.valor_mensalidade or Decimal("0")
+                    ) * cycle_size
+                    novo_ciclo.save(
+                        update_fields=[
+                            "deleted_at",
+                            "status",
+                            "data_inicio",
+                            "data_fim",
+                            "valor_total",
+                            "updated_at",
+                        ]
+                    )
+                else:
+                    novo_ciclo = Ciclo.objects.create(
+                        contrato=contrato,
+                        numero=destino_numero,
+                        data_inicio=data_inicio,
+                        data_fim=data_fim,
+                        status=Ciclo.Status.ABERTO,
+                        valor_total=(contrato.valor_mensalidade or Decimal("0")) * cycle_size,
+                    )
                 refinanciamento.ciclo_destino = novo_ciclo
                 refinanciamento.save(update_fields=["ciclo_destino", "updated_at"])
             else:
                 novo_ciclo = refinanciamento.ciclo_destino
 
-            existing_refs = {
-                parcela.referencia_mes
-                for parcela in novo_ciclo.parcelas.filter(deleted_at__isnull=True)
-            }
-            existing_count = len(existing_refs)
-            if existing_count < cycle_size:
-                next_numero = (
-                    novo_ciclo.parcelas.filter(deleted_at__isnull=True)
-                    .order_by("-numero")
-                    .values_list("numero", flat=True)
-                    .first()
-                    or 0
-                ) + 1
+            # Parcelas vivas do ciclo (ja existentes apos restauracao/criacao).
+            live_parcelas = list(
+                novo_ciclo.parcelas.filter(deleted_at__isnull=True).order_by("numero")
+            )
+            existing_refs_to_live = {p.referencia_mes: p for p in live_parcelas}
+            used_numeros = {p.numero for p in live_parcelas}
+            if len(live_parcelas) < cycle_size:
+                # Index para reutilizar parcelas soft-deleted do mesmo ciclo
+                # antes de criar novas (evita conflito com UNIQUE(ciclo, numero)).
+                soft_deleted_pool = list(
+                    Parcela.all_objects.filter(
+                        ciclo=novo_ciclo,
+                        deleted_at__isnull=False,
+                    ).order_by("numero")
+                )
+                next_numero = (max(used_numeros) if used_numeros else 0) + 1
                 for index in range(cycle_size):
                     referencia = add_months(data_inicio, index)
-                    if referencia in existing_refs:
+                    if referencia in existing_refs_to_live:
                         continue
-                    Parcela.objects.create(
-                        ciclo=novo_ciclo,
-                        associado=contrato.associado,
-                        numero=next_numero,
-                        referencia_mes=referencia,
-                        valor=contrato.valor_mensalidade or Decimal("0"),
-                        data_vencimento=referencia,
-                        status=Parcela.Status.EM_PREVISAO,
-                    )
+                    while next_numero in used_numeros:
+                        next_numero += 1
+                    # Reutiliza um soft-deleted (preferindo mesmo numero) ao
+                    # inves de inserir nova linha
+                    reused = next(
+                        (p for p in soft_deleted_pool if p.numero == next_numero),
+                        None,
+                    ) or (soft_deleted_pool.pop(0) if soft_deleted_pool else None)
+                    if reused is not None:
+                        soft_deleted_pool = [p for p in soft_deleted_pool if p.pk != reused.pk]
+                        reused.deleted_at = None
+                        reused.numero = next_numero
+                        reused.referencia_mes = referencia
+                        reused.valor = contrato.valor_mensalidade or Decimal("0")
+                        reused.data_vencimento = referencia
+                        reused.data_pagamento = None
+                        reused.status = Parcela.Status.EM_PREVISAO
+                        reused.layout_bucket = Parcela.LayoutBucket.CYCLE
+                        reused.associado = contrato.associado
+                        reused.save(
+                            update_fields=[
+                                "deleted_at",
+                                "numero",
+                                "referencia_mes",
+                                "valor",
+                                "data_vencimento",
+                                "data_pagamento",
+                                "status",
+                                "layout_bucket",
+                                "associado",
+                                "updated_at",
+                            ]
+                        )
+                    else:
+                        Parcela.objects.create(
+                            ciclo=novo_ciclo,
+                            associado=contrato.associado,
+                            numero=next_numero,
+                            referencia_mes=referencia,
+                            valor=contrato.valor_mensalidade or Decimal("0"),
+                            data_vencimento=referencia,
+                            status=Parcela.Status.EM_PREVISAO,
+                        )
+                    used_numeros.add(next_numero)
                     next_numero += 1
                 expected_total = (contrato.valor_mensalidade or Decimal("0")) * cycle_size
                 if novo_ciclo.valor_total != expected_total:

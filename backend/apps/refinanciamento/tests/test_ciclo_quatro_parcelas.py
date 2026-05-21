@@ -458,6 +458,59 @@ class CicloQuatroParcelasTestCase(TestCase):
             "Comissao admin 3->4 deve ser 90 * 4/3 = 120",
         )
 
+    def test_efetivar_com_ciclo_destino_soft_deleted_reutiliza(self):
+        """Quando ja existe ciclo n+1 soft-deleted, efetivar deve restaura-lo
+        em vez de tentar INSERT (que falha pela UNIQUE constraint)."""
+        from apps.refinanciamento.services import RefinanciamentoService
+        from apps.contratos.models import Ciclo, Parcela
+        from datetime import date as _date
+
+        refi = self._build_concluido_refi_ciclo3(cpf="55544433326")
+        # cria um ciclo n=2 soft-deleted, com parcelas soft-deleted, para
+        # simular tentativa anterior revertida
+        ciclo_velho = Ciclo.objects.create(
+            contrato=refi.contrato_origem,
+            numero=2,
+            data_inicio=_date(2025, 11, 1),
+            data_fim=_date(2026, 1, 1),
+            status=Ciclo.Status.ABERTO,
+            valor_total=Decimal("1500.00"),
+        )
+        Parcela.objects.bulk_create([
+            Parcela(
+                ciclo=ciclo_velho,
+                associado=refi.contrato_origem.associado,
+                numero=i + 1,
+                referencia_mes=ref,
+                valor=Decimal("500.00"),
+                data_vencimento=ref,
+                status=Parcela.Status.EM_PREVISAO,
+            )
+            for i, ref in enumerate([_date(2025, 11, 1), _date(2025, 12, 1), _date(2026, 1, 1)])
+        ])
+        # soft-delete tudo
+        Parcela.all_objects.filter(ciclo=ciclo_velho).update(
+            deleted_at="2026-04-01 00:00:00+00:00"
+        )
+        ciclo_velho.deleted_at = "2026-04-01 00:00:00+00:00"
+        ciclo_velho.save(update_fields=["deleted_at", "updated_at"])
+
+        # agora efetivar deve restaurar o ciclo 2 ao inves de tentar criar novo
+        refi = RefinanciamentoService.efetivar(
+            refi.id,
+            comprovante_associado=None,
+            comprovante_agente=None,
+            user=self.admin,
+            proximo_ciclo_parcelas=3,
+        )
+        refi.refresh_from_db()
+        self.assertEqual(refi.status, Refinanciamento.Status.EFETIVADO)
+        self.assertIsNotNone(refi.ciclo_destino_id, "ciclo destino deve existir")
+        # confirma que o ciclo destino e o restaurado (mesmo id), nao um novo
+        self.assertEqual(refi.ciclo_destino_id, ciclo_velho.id)
+        self.assertIsNone(refi.ciclo_destino.deleted_at)
+        self.assertEqual(refi.ciclo_destino.parcelas.filter(deleted_at__isnull=True).count(), 3)
+
     def test_solicitar_apos_revertido_forca_materializacao(self):
         """Solicitar funciona mesmo com refi anterior em REVERTIDO bloqueando rebuild."""
         from apps.refinanciamento.services import RefinanciamentoService
